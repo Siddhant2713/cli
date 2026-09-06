@@ -312,3 +312,39 @@ func TestCircularEvidenceIsExcluded(t *testing.T) {
 		}
 	}
 }
+
+// TestSemanticSearchAloneCannotConfirmARequirement covers a real false positive
+// found by running against a repo that genuinely had no rate limiting.
+//
+// `graph def RateLimiter` found nothing and `graph impact` returned an empty
+// focus, but semantic search matched a nearby Login function and the requirement
+// was reported COMPLETED. Text search had correctly reported it unverified — so
+// turning the graph ON made the answer strictly worse.
+//
+// Semantic search is a nearest-neighbour query: it always returns the closest
+// code, including when nothing implements the requirement at all. It locates;
+// it does not confirm.
+func TestSemanticSearchAloneCannotConfirmARequirement(t *testing.T) {
+	proximityOnly := []Evidence{
+		{ID: "ev_1", Kind: EvidenceGraphSearch, Citation: "auth/login.go:5", Completeness: CompletenessComplete},
+		{ID: "ev_2", Kind: EvidenceGraphSearch, Citation: "auth/login.go:2", Completeness: CompletenessComplete},
+	}
+	st, _, notes := StateFromEvidence(proximityOnly, CompletenessComplete)
+	if st == StateCompleted {
+		t.Error("semantic-search hits alone confirmed a requirement; proximity is not identity")
+	}
+	if st != StatePartial {
+		t.Errorf("state = %q, want partial", st)
+	}
+	if !strings.Contains(notes, "no declaration") {
+		t.Errorf("notes should explain that no declaration was found, got %q", notes)
+	}
+
+	// A declaration-level hit is a different claim and may confirm.
+	withDef := append([]Evidence{
+		{ID: "ev_0", Kind: EvidenceGraphDef, Citation: "auth/ratelimit.go:12", Completeness: CompletenessComplete},
+	}, proximityOnly...)
+	if st, _, _ := StateFromEvidence(withDef, CompletenessComplete); st != StateCompleted {
+		t.Errorf("declaration-level evidence should confirm, got %q", st)
+	}
+}

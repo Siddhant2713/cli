@@ -136,7 +136,10 @@ func (c *EvidenceCollector) Collect(ctx context.Context, req Requirement) ([]Evi
 			imp, err := c.Graph.Impact(ctx, sym)
 			if err != nil {
 				limitations = append(limitations, fmt.Sprintf("graph impact %q failed: %v", sym, err))
-			} else {
+			} else if imp.Focus.FilePath != "" {
+				// An impact result whose focus did not resolve means the symbol
+				// does not exist. Recording that as evidence *for* the
+				// requirement would invert its meaning.
 				found = append(found, Evidence{
 					ID:       c.nextID("ev"),
 					Kind:     EvidenceGraphImpact,
@@ -267,30 +270,52 @@ func StateFromEvidence(ev []Evidence, searchQuality Completeness) (State, Comple
 			"The evidence search could not be completed, so no conclusion is available for this requirement."
 	}
 
-	var structural, lexical int
+	// Evidence is graded into three tiers, and the distinction between the top
+	// two decides whether a requirement may be called completed.
+	//
+	// DEFINITIONAL evidence (graph def, and impact with a resolved focus) answers
+	// "does a thing with this name exist?" — it is an identity claim.
+	// PROXIMITY evidence (graph search) answers "what is the nearest code to this
+	// description?" — a ranked nearest-neighbour result that always returns
+	// something, even when nothing implements the requirement at all.
+	//
+	// Treating those as interchangeable produced a real false positive: in a repo
+	// with no rate limiting whatsoever, `graph def RateLimiter` found nothing and
+	// `graph impact` returned an empty focus, but semantic search matched the
+	// Login function and the requirement was reported COMPLETED. Text search had
+	// correctly reported it missing — so enabling the graph made the answer worse.
+	// Proximity alone can therefore never promote a requirement past partial.
+	var definitional, proximity, lexical int
 	worst := CompletenessComplete
 	for _, e := range ev {
 		worst = WorstCompleteness(worst, e.Completeness)
 		switch e.Kind {
 		case EvidenceTextSearch:
 			lexical++
+		case EvidenceGraphSearch:
+			proximity++
 		default:
-			structural++
+			definitional++
 		}
 	}
 	combined := WorstCompleteness(worst, searchQuality)
 
 	switch {
-	case structural == 0:
+	case definitional == 0 && proximity == 0:
 		return StatePartial, WorstCompleteness(combined, CompletenessPartial),
 			"Only lexical (text-search) evidence was found. The named identifiers appear in the tree, " +
 				"but no structural relationship was verified."
+	case definitional == 0:
+		return StatePartial, WorstCompleteness(combined, CompletenessPartial),
+			fmt.Sprintf("%d semantic-search hits located nearby code, but no declaration matching this "+
+				"requirement's named symbols was found. Semantic search returns the closest code even when "+
+				"nothing implements the requirement, so this is reported as partial, not confirmed.", proximity)
 	case combined.Authoritative():
 		return StateCompleted, combined,
-			fmt.Sprintf("%d structural citations from the code graph support this requirement.", structural)
+			fmt.Sprintf("%d declaration-level citations from the code graph support this requirement.", definitional)
 	default:
 		return StatePartial, combined,
-			fmt.Sprintf("%d structural citations found, but the graph reported an incomplete view, "+
-				"so this is reported as partial rather than confirmed.", structural)
+			fmt.Sprintf("%d declaration-level citations found, but the graph reported an incomplete view, "+
+				"so this is reported as partial rather than confirmed.", definitional)
 	}
 }
