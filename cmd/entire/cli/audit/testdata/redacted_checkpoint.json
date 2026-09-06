@@ -1,0 +1,7 @@
+{
+  "checkpoint_id": "cp_001",
+  "prompt": "[REDACTED]",
+  "transcript": "[REDACTED]",
+  "requirements": [{ "id": "rate_limit", "status": "unknown" }],
+  "context_completeness": "partial"
+}

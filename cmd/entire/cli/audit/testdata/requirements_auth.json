@@ -1,0 +1,25 @@
+{
+  "requirements": [
+    {
+      "id": "rate_limit",
+      "summary": "Rate limiting on the login endpoint",
+      "risk_category": "security",
+      "risk_weight": 4.5,
+      "search_hints": ["RateLimiter", "rate limiting on login attempts"]
+    },
+    {
+      "id": "session_invalidation",
+      "summary": "Session invalidation on logout and password change",
+      "risk_category": "security",
+      "risk_weight": 4.0,
+      "search_hints": ["InvalidateSession", "session invalidation"]
+    },
+    {
+      "id": "password_hashing",
+      "summary": "Passwords stored using a slow one-way hash",
+      "risk_category": "security",
+      "risk_weight": 5.0,
+      "search_hints": ["HashPassword", "bcrypt password hashing"]
+    }
+  ]
+}

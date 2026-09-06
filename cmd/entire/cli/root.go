@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"runtime"
 
+	"github.com/entireio/cli/cmd/entire/cli/audit"
 	"github.com/entireio/cli/cmd/entire/cli/experimental"
 	"github.com/entireio/cli/cmd/entire/cli/investigate"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -182,6 +183,7 @@ func NewRootCmd() *cobra.Command {
 
 	// Top-level lifecycle and standalone commands.
 	experimental.Register(cmd, cliReview.NewCommand(buildReviewDeps()))        // `review` (experimental)
+	experimental.Register(cmd, audit.NewCommand())                             // `audit` (experimental); feature audit & decision drift
 	experimental.Register(cmd, investigate.NewCommand(buildInvestigateDeps())) // `investigate` (experimental); multi-agent investigation
 	cmd.AddCommand(inGroup(newCleanCmd(), groupSetup))
 	cmd.AddCommand(inGroup(newSetupCmd(), groupSetup)) // 'configure' — non-agent settings; agent CRUD lives under 'agent'

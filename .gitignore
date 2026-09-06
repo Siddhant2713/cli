@@ -71,3 +71,6 @@ tmp/
 entire-external-cp-test/
 /skills/
 /git-remote-entire
+
+# hackathon working log (informal, not for judging)
+.agent-log/
