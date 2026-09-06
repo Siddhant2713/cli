@@ -1,296 +1,321 @@
-# Feature Audit & Decision Drift — `entire audit`
+# `entire audit` — Feature Audit & Decision Drift
 
-Bengaluru Tech Week Buildathon 2026 · Track 1 · built on a fork of `github.com/entireio/cli`
+**Bengaluru Tech Week Buildathon 2026 · Track 1 · Databricks track opted in**
+
+| | |
+|---|---|
+| **Fork** | `https://github.com/Siddhant2713/cli` |
+| **Final commit** | `465f11db5c4a7330795f8f0710854f89b30fe64e` (branch `main`) |
+| **Entire mirror** | `entire://aws-ap-south-1.entire.io/gh/siddhant2713/cli` |
+| **Databricks workspace** | `https://dbc-42a681b0-04dc.cloud.databricks.com` |
+| **Delta tables** | `workspace.entire_audit.feature_requirements`, `workspace.entire_audit.risk_findings` |
+| **Tests** | 37 passing (`go test ./cmd/entire/cli/audit/`) |
+| **Checkpoints** | 4, covering all four required milestones |
 
 ---
 
-## One-sentence summary
+## One sentence
 
 `entire audit` reads a feature's checkpoint history, decomposes the original request into a
-requirement graph, searches the Entire Graph for structural evidence that each requirement was
-actually implemented, detects pivots and decision contradictions across checkpoints, and reports
-risk-adjusted coverage — honestly labelling what it could not verify instead of guessing.
+requirement graph, uses Entire Graph to find structural evidence that each requirement was
+actually implemented, detects pivots and decision contradictions, and reports risk-adjusted
+coverage — **honestly labelling what it could not verify instead of guessing.**
 
-## Problem, intended user, and why it matters
+## The problem
 
-**The user:** an engineer or reviewer who has to sign off on a feature an AI agent built across
-many sessions.
+A diff shows that code changed. It does not show what was *supposed* to happen.
 
-**The problem:** a diff tells you what changed. It does not tell you what was *supposed* to
-happen. When an agent is told "add rate limiting", tries Redis, hits a wall, and quietly falls
-back to an in-memory map, the diff looks small and clean. What the diff cannot show you is that a
-distributed-system guarantee just disappeared. The intent, the failed attempt, and the
-substitution live in the session narrative — which nobody reads, because it is thousands of lines
-long and scattered across sessions.
+Tell an agent "add rate limiting". It tries Redis, hits a wall, and quietly falls back to an
+in-memory map. The diff looks small and clean. What the diff cannot show you is that a
+distributed-system guarantee just disappeared — the limiter no longer holds across instances and
+does not survive a restart. The intent, the failed attempt, and the substitution live in the
+session narrative, which nobody reads because it is thousands of lines scattered across sessions.
 
-Entire Checkpoints already capture that narrative. Nothing yet *audits* it. That gap is the
-product.
+Entire Checkpoints already preserve that narrative. Nothing yet **audits** it. That gap is the product.
 
-**Why it matters now:** as more code is agent-written, review shifts from "is this code correct?"
-to "is this code the thing we asked for?" Those are different questions, and only the second one
-needs the history.
+As more code is agent-written, review shifts from *"is this code correct?"* to *"is this code the
+thing we asked for?"* Only the second question needs the history.
 
-## Selected Entire track and why Entire is essential
+## Why Entire is essential
 
-Track 1. This feature cannot exist without Entire. It depends on two capabilities that are
-Entire's alone:
+This feature cannot exist without Entire. It depends on two capabilities that are Entire's alone:
 
-1. **Checkpoints** preserve prompts, intent, and per-session narrative alongside commits. Pivot
-   and decision-drift detection are reads over that record. Git history alone does not contain it.
-2. **Entire Graph** answers structural questions — does this symbol exist, who calls it, what
-   does this commit actually change — deterministically and with no network egress. That is what
-   makes a finding *evidence* rather than a model's opinion.
+1. **Checkpoints** preserve prompts, intent and per-session narrative alongside commits. Pivot and
+   decision-drift detection are reads over that record. Git history does not contain it.
+2. **Entire Graph** answers structural questions deterministically, with no network egress — does
+   this symbol exist, who calls it, what did this commit change. That is what makes a finding
+   *evidence* rather than a model's opinion.
 
-## Architecture and main workflow
+---
 
-Five stages, in `cmd/entire/cli/audit/`:
+## The strongest evidence this works: it caught four real bugs in itself
 
-| Stage | Input | Output | Implementation |
-|---|---|---|---|
-| 1. Requirement extraction | the original ask | atomic requirement graph | `extract.go` — forced-JSON, one call |
-| 2. Checkpoint read | branch checkpoint range | checkpoint sequence + completeness | `checkpoints.go` |
-| 3. Evidence search | each requirement | structural citations | `evidence.go` + `graph.go` |
-| 4. Pivot & drift detection | checkpoint sequence | flagged findings | `drift.go` |
-| 5. Risk-adjusted report | all states + findings | cited CLI report + export | `risk.go`, `report.go`, `privacy.go`, `databricks.go` |
+Every one was found by pointing the tool at real data, and every one is the same failure the tool
+exists to detect — **claiming more than the evidence supports.** Each is a commit with the
+reasoning in its message.
 
-Registered in `cmd/entire/cli/root.go` via `experimental.Register(cmd, audit.NewCommand())`,
-the same way `review` and `investigate` are.
+| # | Bug | Commit |
+|---|---|---|
+| 1 | **Turning Graph ON made the answer worse.** In a repo with no rate limiting, `graph def RateLimiter` correctly found nothing — but fuzzy semantic search matched a nearby `Login` function and the requirement was reported **COMPLETED**. `--no-graph` had it right. | `1fbe30f8a` |
+| 2 | **The user's prompt was read as the agent's decision.** A prompt saying *"if Redis turns out not to be usable, implement the best alternative"* was matched as a completed attempt→failure→pivot chain. A hypothetical in an instruction is not a record that it happened. | `86d2603e6` |
+| 3 | **Circular evidence.** `git grep` matched search hints inside the requirements file *that defined them* — citing its own input as proof the input was implemented. | `86d2603e6` |
+| 4 | **A prompt-egress leak, found by the Curveball's Graph requirement.** See below. | `d4c232f54` |
 
-### The central discipline: unknown is not completed — and it is not "not implemented" either
+Bug 1 is the one worth dwelling on. A tool whose entire pitch is *"we do not claim more than the
+evidence supports"* was reporting a **missing security control as implemented** — and the
+better-instrumented code path was the one that got it wrong. It was caught only by running against
+a repository where the right answer was known in advance.
 
-This is the design constraint everything else follows from. `StateFromEvidence` in `evidence.go`
-keeps two things apart that are easy to conflate:
+**The fix**: evidence is now graded into three tiers, and only the top one can confirm.
+
+- **Definitional** (`graph def`, `graph impact` with a resolved focus) — *"does a thing with this
+  name exist?"* An identity claim. **Can confirm.**
+- **Proximity** (`graph search`) — *"what is the nearest code to this description?"* A
+  nearest-neighbour query that **always returns something**, including when nothing implements the
+  requirement. It locates; it does not confirm. **Caps at partial.**
+- **Lexical** (`git grep`) — weakest, recorded under its own evidence kind.
+
+---
+
+## The central discipline: unknown is not completed — and it is not "not implemented" either
+
+This is the constraint everything else follows from. `StateFromEvidence` keeps apart two things
+that are easy to conflate:
 
 - **how well we were able to look** (search quality), and
 - **what we found** (the result).
 
-A *complete* search that finds nothing yields `not_verified`, with the report stating in words
-that absence of evidence is not evidence of absence. An *incomplete* search that finds nothing
-yields `unknown`. Neither ever renders as "was not implemented" — that is a claim about the code
-which an absence of evidence does not earn.
+A *complete* search that finds nothing yields `not_verified`, and the report says in words that
+absence of evidence is not evidence of absence. An *incomplete* search that finds nothing yields
+`unknown`. **Neither ever renders as "was not implemented"** — that is a claim about the code which
+an absence of evidence does not earn.
 
-Every requirement state, every finding, and the overall verdict carry a `context_completeness`
-value and an `authoritative` boolean. Only a `complete` record can produce an authoritative claim.
+Every requirement state, every finding and the overall verdict carry a `context_completeness` value
+and an `authoritative` boolean. `Completeness.Authoritative()` is the single gate, and only a
+`complete` record passes it.
 
-### Evidence ladder
+**Risk-adjusted coverage.** Eight of ten requirements met is not "80%, minor gap" when the missing
+two are rate limiting and session invalidation. Coverage is weighted by risk, both numbers are
+reported, and **the verdict always arrives with its arithmetic shown** so a reader can disagree on
+the merits rather than trust a score.
 
-Evidence is gathered in descending order of strength, and the report always says which tier a
-conclusion rests on:
+---
 
-1. `entire graph def <symbol>` — does the code exist, with the right shape?
-2. `entire graph search --query "<requirement>"` — semantic location.
-3. `entire graph impact --symbol <symbol>` — is it actually *reachable*? A definition existing is
-   not the same as it being wired up. This is what answers "does the lockout path really reach the
-   rate limiter?"
-4. `git grep` — lexical fallback only, recorded under its own evidence kind and never promoted to
-   a structural fact.
+## Noon Curveball — privacy boundary
 
-Every piece of evidence carries the literal command that produced it, so a reader can re-run it.
+Six of the seven requirements were already satisfied by the original design; the privacy boundary
+was built in from the first commit because it is cheap to design in and expensive to retrofit.
 
-## Entire Graph findings and verification
+**The requirement that earned its keep was #6: "use Entire Graph to identify every code path
+affected by this privacy boundary."** It found a real leak.
 
-Commands run live during the build, all independently reproducible:
+The privacy question is reverse-reachability — *what are the egress sinks, and what reaches them* —
+which is exactly `graph neighbors --direction in`:
 
 ```bash
-# Definition lookup — used as evidence, and to verify the extension point before writing code
-entire graph def NewRootCmd --repo . --format json
-
-# Semantic search
-entire graph search --repo . --query "checkpoint list json output" --format json
-
-# Impact analysis — run BEFORE modifying root.go, to check the blast radius of the change
-entire graph impact --repo . --symbol NewRootCmd --format json
-
-# Final semantic diff of the submitted implementation
-entire graph commit HEAD
+entire graph neighbors --repo . --symbol BuildExport --relation CALLS --direction in --profile full --format json
+# FOCUS: BuildExport  cmd/entire/cli/audit/privacy.go:110
+#   <-   run          cmd/entire/cli/audit/command.go
 ```
 
-The `graph impact` on `NewRootCmd` reported **125 callers (101 direct)** before the registration
-change, which is what justified making the edit a single additive `experimental.Register` line
-rather than restructuring the command table.
+**Exactly two paths leave the machine:**
 
-The graph's own `completeness`, `warnings`, and `partial_failures` blocks are consumed directly by
-`completenessFromDiagnostics` in `graph.go`. When the graph reports an incomplete parse, the audit
-downgrades its own conclusions — the provenance is machine-read, not asserted.
+| Sink | Reached from | Carries | Status |
+|---|---|---|---|
+| `execStatement` → Databricks | `run` → `BuildExport` → `PushToDatabricks` | `ExportBundle` rows only | Safe by construction |
+| `AnthropicExtractor.Extract` → Anthropic | `Run` (audit.go) | **raw checkpoint prompt** | **Was unguarded** |
 
-## Privacy boundary and required test — what never left the local environment
+The second path was invisible until the reachability question was asked, because **sending the
+prompt to a model is the feature working exactly as designed** — right up until the repository is
+sensitive. The Databricks boundary had been designed in and reasoned about repeatedly; no scrutiny
+of the export types would have surfaced this, because the leak is not in the export path at all.
 
-**Hard constraint:** raw prompts, transcripts, tool arguments, and unredacted checkpoint payloads
-never leave the machine.
+**Closed in `egress.go`** — default-deny whenever any checkpoint in range is redacted:
 
-This is enforced **structurally, not by redaction.** `BuildExport` in `privacy.go` constructs two
-export row types field by field from a closed allowlist. Nothing marshals the in-memory `Report`.
+```bash
+entire audit --requirements <file.json>   # sensitive-safe: sends nothing anywhere
+entire audit --sensitive                  # force-deny regardless of history
+entire audit --allow-prompt-egress        # explicit operator opt-in
+```
 
-The alternative — marshal everything and strip sensitive keys — was rejected deliberately: a
-redactor is a *denylist*, and it fails **open** the day someone adds a field it does not know
-about. The field that leaks is precisely the new one nobody thought about. Field-by-field
-construction fails **closed**: a new field on `Checkpoint` or `Finding` cannot reach the export
-unless a human writes an export line for it.
+Three deliberate choices: the redaction signal is **conservative** (one redacted checkpoint marks
+the whole repo sensitive — inferring "the un-redacted ones must be fine" is exactly the assumption a
+privacy boundary must not make); `extractorSendsPromptOffMachine` **fails closed** so an
+unrecognised future extractor is treated as remote; and the check runs **before** the extractor is
+invoked, with the test asserting it was *never called* rather than merely that an error came back.
 
-`sanitizeSummary` is defence in depth behind that boundary — it scrubs credential shapes
-(API keys, GitHub tokens, AWS keys, JWTs, labelled secrets) and bounds field length, so a bug
-upstream that puts transcript text in a summary field has a bounded blast radius.
+### All seven Curveball requirements
 
-### The required test
+| # | Requirement | Where |
+|---|---|---|
+| 1 | No raw prompts/transcripts to a new external service | Allowlist in `privacy.go`; egress guard in `egress.go`; verified against live rows |
+| 2 | Useful output when fields are redacted | `TestSensitiveRepoStillProducesAUsefulAudit` — full pipeline on a wholly redacted history |
+| 3 | Existing local functionality unchanged | 37 tests green; `--requirements` / `--no-graph` untouched |
+| 4 | Interface distinguishes complete vs incomplete | Three context banners + `context_completeness` and `authoritative` on every state, finding and row |
+| 5 | A test using redacted/missing Checkpoint data | `TestRedactedCheckpointNeverBecomesAuthoritativeClaim` (mutation-verified) + 4 egress tests |
+| 6 | Graph identifies affected paths | `docs/audit-evidence/curveball-privacy-paths.md` |
+| 7 | Never present incomplete context as authoritative | `Completeness.Authoritative()` — the single gate |
 
-`TestRedactedCheckpointNeverBecomesAuthoritativeClaim` (`privacy_test.go`) uses the redacted
-checkpoint fixture from the spec and asserts the system reports *"Rate limiting … could not be
-verified"* with `context_completeness: partial` and `authoritative: false` — and explicitly fails
-if it instead emits an authoritative negative claim like *"Rate limiting was not implemented."*
+---
 
-**It was mutation-verified, not merely observed passing.** Injecting the exact bug the spec names
-— changing `GapFindings` to emit `"%s was not implemented"` with `Authoritative: true` — makes the
-test fail on all three assertions (summary wording, authoritative flag, forbidden rendered
-string). Reverting makes it pass. A test that has never been seen to fail proves nothing.
+## Privacy boundary — enforced structurally, not by redaction
 
-`TestExportRecordsCarryNoFreeText` plants canary strings in every narrative field of a report and
-asserts none of them reach the exported JSON, and that the repository URL is hashed rather than
-shipped in the clear.
+`BuildExport` constructs the two export row types **field by field from a closed allowlist**.
+Nothing marshals the in-memory `Report`.
 
-## Databricks use, data sources, and limitations
+Marshalling everything and stripping sensitive keys was rejected deliberately: **a redactor is a
+denylist, and it fails open** the day someone adds a field it does not know about — and the field
+that leaks is precisely the new one nobody considered. Field-by-field construction **fails closed**:
+a new field on `Checkpoint` or `Finding` cannot reach the export unless a human writes an export
+line for it.
 
-**Capability used:** Delta tables in the Free Edition SQL warehouse, written through the SQL
-Statement Execution API (`/api/2.0/sql/statements`).
+**The required test was mutation-verified, not merely observed passing.** Injecting the exact bug
+the spec names — `GapFindings` emitting `"%s was not implemented"` with `Authoritative: true` —
+makes the test fail on all three assertions (summary wording, authoritative flag, forbidden
+rendered string); reverting makes it pass. *A test that has never been seen to fail proves nothing.*
 
-**Why it is essential:** an audit that only ever prints to a terminal cannot be tracked over time.
-The two tables turn per-run output into a queryable record of how requirement coverage and risk
-findings move across commits and features — which is the actual product question ("is this getting
-better or worse?"), not something a CLI report can answer.
+---
 
-**Schema** (`schema.sql`, generated by `DatabricksConfig.DDL()`):
+## Databricks — verified live, and the schema is the evidence
 
-- **`feature_requirements`** — `feature_id, requirement_id, repository_hash, checkpoint_id,
-  requirement_summary, status, risk_category, risk_weight, context_completeness, authoritative,
-  evidence_count, created_at`
-- **`risk_findings`** — `finding_id, feature_id, checkpoint_id, kind, risk_category, risk_level,
-  finding_summary, evidence_ids, recommendation, context_completeness, authoritative, created_at`
+Delta tables in the Free Edition SQL warehouse, written via the SQL Statement Execution API.
+
+- **Workspace** `https://dbc-42a681b0-04dc.cloud.databricks.com`
+- **Warehouse** Serverless Starter Warehouse (`95075e699388f0ff`)
+- **`feature_requirements`** — 12 rows · **`risk_findings`** — 0 rows
+
+**Why it is essential:** an audit that only prints to a terminal cannot be tracked over time. These
+tables turn per-run output into a queryable record of how coverage and risk move across commits —
+the actual product question ("is this getting better or worse?"), which a CLI report cannot answer.
 
 **`context_completeness` and `authoritative` are columns on both tables.** The schema *is* the
-privacy and provenance evidence — a consumer of these tables cannot accidentally treat an
-unverifiable row as a confirmed one, because the row itself says so. `repository_hash` is a
-SHA-256 prefix, never the URL, so rows join across runs without naming a private repo.
+provenance evidence: a consumer cannot mistake an unverifiable row for a confirmed one, because the
+row says so. `repository_hash` is a SHA-256 prefix (`1b3bcf4033c8166d`) — never the URL.
 
-**Data provenance:** every row derives from a real checkpoint read via `entire checkpoint
-list/explain` and real graph queries. Nothing is synthesised. `evidence_count` ties a row back to
-citations held locally in the full JSON report.
+**Privacy verified against the live table, not only in tests.** Querying `SELECT *` and scanning for
+text known to exist locally — the prompts, `[User]`/`[Assistant]` speaker tags, "Redis", the repo
+owner's name — returns **none of it**.
 
-**Reproduction:**
+**Two results that look like failures and are not.** Every row reads `context_completeness=partial,
+authoritative=false`: that run used `--no-graph`, so all evidence was lexical, and lexical evidence
+cannot establish a structural fact. **The tool declining to mark its own requirements confirmed on
+the strength of grep hits is the argument of the feature, visible in data rather than asserted in
+prose.** And `risk_findings` is empty because no pivot exists in the available checkpoints —
+fabricating a row to make the table look alive would be exactly the failure this tool detects.
 
-```bash
-export DATABRICKS_HOST=https://<workspace>.cloud.databricks.com
-export DATABRICKS_TOKEN=<token>
-export DATABRICKS_WAREHOUSE_ID=<warehouse-id>
-entire audit --requirements <reqs.json> --export ./audit-export --databricks
-```
+---
 
-**Verified live.** The tables were created and populated against a real Databricks Free Edition
-workspace, and the rows were read back to confirm — not merely a successful exit code:
+## Architecture
 
-- **Workspace:** `https://dbc-42a681b0-04dc.cloud.databricks.com`
-- **SQL warehouse:** `Serverless Starter Warehouse` (`95075e699388f0ff`)
-- **Tables:** `workspace.entire_audit.feature_requirements` (12 rows),
-  `workspace.entire_audit.risk_findings` (0 rows — see below)
+Five stages in `cmd/entire/cli/audit/`, registered in `root.go` via
+`experimental.Register(cmd, audit.NewCommand())` — the same shape as `review` and `investigate`.
 
-```sql
-SELECT requirement_id, status, risk_category, risk_weight, context_completeness, authoritative
-FROM workspace.entire_audit.feature_requirements ORDER BY risk_weight DESC;
-```
+| Stage | Output | File |
+|---|---|---|
+| 1. Requirement extraction | atomic requirement graph | `extract.go` |
+| 2. Checkpoint read | sequence + per-checkpoint completeness | `checkpoints.go` |
+| 3. Evidence search | structural citations | `evidence.go`, `graph.go` |
+| 4. Pivot & drift detection | flagged findings | `drift.go` |
+| 5. Risk-adjusted report | cited report + export | `risk.go`, `report.go`, `privacy.go`, `databricks.go` |
+| — | privacy egress guard | `egress.go` |
 
-Every row on that run came back `context_completeness = partial`, `authoritative = false`. That is
-the correct result, not a bug: the run used `--no-graph`, so all evidence was lexical, and lexical
-evidence cannot establish a structural fact. **A judge should be able to see that the tool declines
-to mark its own requirements "confirmed" when it only has grep hits to go on.** That is the entire
-argument of the feature, visible in the data rather than asserted in prose.
+**Pivot and drift detection are deterministic pattern matchers, not LLM calls.** Asking a model
+"did the agent contradict itself?" was rejected: a model returns a plausible contradiction for *any*
+input, and a confabulated contradiction is worse than no finding — it poisons the trust the feature
+is selling. Regex over narrative either matches real text or it does not, and every finding quotes
+the checkpoint it came from. **Known cost: recall.** A pivot nobody wrote down is invisible, and the
+report says so rather than implying the history was clean.
 
-`risk_findings` is legitimately empty on this corpus — no pivot or drift was detected in the two
-available checkpoints. An empty findings table is an honest result; fabricating a finding to fill
-it would be the exact failure this tool is built to detect.
+**Checkpoint access is by subprocess**, not by importing `cmd/entire/cli/checkpoint` directly: that
+package's readers need a threaded git store and its on-disk layout is internal, whereas `--json` is
+the documented contract. Both the reader and the graph client sit behind interfaces — which is also
+what makes the privacy fixture test possible without a live repo.
 
-**Privacy boundary verified against the live table**, not only in unit tests. Querying
-`SELECT *` and scanning for text that exists locally in the checkpoint record — the prompts
-("Add a result cache…", "edit somehting…"), the transcript speaker tags (`[User]`, `[Assistant]`),
-the technology named in the pivot ("Redis"), and the repo owner's name — returns **none of them**.
-`repository_hash` is `1b3bcf4033c8166d`, a SHA-256 prefix; the workspace never receives the
-repository URL.
+---
 
-**Reproduce the verification:**
+## Entire Graph evidence — all reproducible
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $DATABRICKS_TOKEN" -H "Content-Type: application/json" \
-  "$DATABRICKS_HOST/api/2.0/sql/statements" \
-  -d '{"statement":"SELECT * FROM workspace.entire_audit.feature_requirements",
-       "warehouse_id":"'"$DATABRICKS_WAREHOUSE_ID"'","wait_timeout":"50s"}'
+entire graph def NewRootCmd --repo . --format json                     # definition lookup
+entire graph search --repo . --query "checkpoint list json output"     # semantic search
+entire graph impact --repo . --symbol NewRootCmd --format json         # impact BEFORE editing root.go
+entire graph commit HEAD                                               # final semantic diff
+entire graph neighbors --repo . --symbol BuildExport --relation CALLS --direction in --profile full
 ```
 
-**Remaining limitation:** the static NDJSON + DDL export is written on *every* run, before any
-network call, and is the reproducible artifact. A failed push logs a warning and does not fail the
-audit — the report is the deliverable, Databricks is delivery.
+The `impact` run on `NewRootCmd` reported **125 callers (101 direct)** *before* the registration
+change — which is what justified making the edit a single additive `experimental.Register` line
+rather than restructuring the command table.
 
-## Known limitations and next steps
+Full captures: `docs/audit-evidence/graph-evidence.md`, `docs/audit-evidence/curveball-privacy-paths.md`.
 
-Stated plainly, because the whole feature is an argument for honest labelling:
+---
 
+## Checkpoints — the four milestones
+
+| Milestone | Commit |
+|---|---|
+| 1. Initial understanding and intended architecture | `476802db5` |
+| 2. Last stable state before the Curveball | `1fbe30f8a` |
+| 3. Response to the Curveball | `d4c232f54` |
+| 4. Final implementation and verification | `465f11db5` |
+
+Four checkpoints exist on the branch (`entire checkpoint list`). Each milestone's decisions,
+rejected options, failures and open risks are written out in
+`docs/audit-evidence/MILESTONES.md` and in the commit messages themselves — a fresh session can
+reconstruct intent and state from those alone.
+
+---
+
+## Setup, run and test
+
+```bash
+mise trust && mise install && go mod download && mise run build
+entire enable -y --agent claude-code
+entire plugin install graph          # required — graph is NOT bundled with the CLI
+
+entire audit --requirements cmd/entire/cli/audit/example/feature-audit-requirements.json --no-graph
+entire audit --json
+entire audit --sensitive             # privacy-boundary mode
+entire audit --export ./out          # privacy-safe NDJSON + Delta DDL
+entire audit --fail-on high          # CI gate
+
+go test ./cmd/entire/cli/audit/ -v   # 37 tests
+```
+
+**Inference backends**, in order: `--requirements <file>` (no inference at all), `ANTHROPIC_API_KEY`
+(BYOK), or a headless `claude` CLI with no tool access. With none configured the command **fails
+with actionable guidance** rather than returning an empty requirement graph — which would render as
+"nothing was required", a false authoritative claim of exactly the kind this feature prevents.
+Covered by `TestSelectExtractorFailsClearlyWithoutBackend`. **There is no hosted fallback.**
+
+---
+
+## Known limitations — stated plainly
+
+The whole feature is an argument for honest labelling, so:
+
+- **Graph evidence does not scale to this repository.** It completes in **0.49s on a normal repo**,
+  but a 12-requirement audit of the ~1,250-file CLI repo does not finish in usable time — each
+  requirement issues several `graph` subprocesses and the index does not stay warm. `cache.go` (a
+  filesystem-backed result cache) is written but **not yet wired into `CLIGraphClient`**. That is
+  the single highest-value next commit. `--no-graph` completes in ~1.4s and is the demonstrated path.
+- **Pivot detection has never fired on a live pivot.** It is proven against constructed narratives
+  in `drift_test.go`. The real Redis→filesystem pivot generated during the build lives in the
+  agent's final summary message, which the checkpoint-scope transcript truncates.
+- **Graph reverse-reachability was inconsistent under a time bound** — the same query returned a
+  caller at `--profile full` and an empty array at the default profile. The Curveball analysis
+  therefore pairs the graph pass with an exhaustive `grep` of every outbound HTTP call.
+  **Grep, not the graph, is what makes the "exactly two egress paths" claim provable.**
 - **Requirement extraction is a model's reading of the ask, not a specification.** Coverage is a
-  review aid, not a gate. This is why the command ships behind `experimental.Register`.
-- **Pivot and drift detection are deterministic pattern matchers, so they find *stated* pivots.**
-  A pivot nobody wrote down is invisible to them. Handing the sequence to an LLM was rejected:
-  a model returns a plausible contradiction for *any* input, and a confabulated contradiction is
-  worse than no finding — it poisons exactly the trust this feature is selling. The report says
-  this in its own output rather than implying the history was clean.
-- **Drift detection's constraint vocabulary is a fixed list.** It catches the shapes it knows and
-  will miss novel phrasings.
-- **Graph-backed evidence does not yet complete for a full requirement set on a repo this size.**
-  Each requirement issues several `entire graph` subprocess calls, and on this ~1,250-Go-file
-  repository the index does not stay warm across them, so a 12-requirement audit does not finish
-  in a usable time. **Individual graph queries work and are shown in
-  `docs/audit-evidence/graph-evidence.md`** (def, impact, and the final semantic diff, all
-  reproducible); what is not yet proven is the whole requirement set running through them in one
-  pass. `--no-graph` completes in under a second and is the path demonstrated end to end.
-  `cache.go` (a filesystem-backed graph result cache, keyed on HEAD plus a worktree-status digest)
-  exists to close this gap but is **not yet wired into `CLIGraphClient`** — that is the single
-  highest-value next commit, and it is honest to say it is unfinished rather than to imply the
-  graph path is production-ready.
-- **Condensed checkpoints may lag.** The reader falls back to the pending view and records that as
-  a completeness downgrade, rather than reporting a vacuous "no checkpoints found".
+  review aid, not a gate — which is why the command ships behind `experimental.Register`.
+- **Drift detection's constraint vocabulary is a fixed list**; it catches the shapes it knows.
 
-**Next steps** (Phase 2-4 from the source feature spec, deliberately out of scope today):
+## Next steps
 
 - **Phase 2 — Entire Guard:** move from post-session audit to real-time interception, flagging a
   guarantee-changing pivot *while* the agent makes it.
-- **Phase 3 — Historical Why:** connect `entire why <file>:<line>` output into the requirement and
-  decision graph, so a line of code resolves to the requirement it serves.
-- **Phase 4 — Databricks AI Search, MLflow evaluation, Unity Catalog governance:** evaluate
-  detector precision/recall against a labelled corpus of real pivots, and govern the audit tables.
-
-## Setup, run, and test instructions
-
-```bash
-# Prerequisites: Go 1.26.x, mise
-mise trust && mise install && go mod download
-mise run build
-
-# Entire + graph plugin
-entire enable -y --agent claude-code
-entire plugin install graph        # required — graph is NOT bundled with the CLI
-
-# Run the audit
-entire audit                                              # infers requirements from checkpoint 1
-entire audit --requirements cmd/entire/cli/audit/example/feature-audit-requirements.json
-entire audit --no-graph                                   # fast lexical pass, no graph queries
-entire audit --json                                       # machine-readable full report
-entire audit --export ./audit-export                      # privacy-safe NDJSON + DDL
-entire audit --fail-on high                               # non-zero exit for CI gating
-
-# Tests — including the mandatory privacy test
-go test ./cmd/entire/cli/audit/ -v
-```
-
-**Inference backends**, in order of preference — `--requirements <file>` (no inference at all),
-`ANTHROPIC_API_KEY` (BYOK), or a headless `claude` CLI run with no tool access. With none
-configured the command **fails with actionable guidance** rather than returning an empty
-requirement graph, which would render as "nothing was required" — a false authoritative claim of
-exactly the kind this feature exists to prevent. That failure path is covered by
-`TestSelectExtractorFailsClearlyWithoutBackend`.
-
-There is no hosted or proxy inference fallback. `entire audit` never sends prompts to an
-Entire-operated model.
+- **Phase 3 — Historical Why:** connect `entire why <file>:<line>` into the requirement and decision
+  graph, so a line of code resolves to the requirement it serves.
+- **Phase 4 — Databricks AI Search, MLflow, Unity Catalog:** evaluate detector precision and recall
+  against a labelled corpus of real pivots, and govern the audit tables.
