@@ -24,6 +24,9 @@ type Options struct {
 	// Reader and Graph are injectable so tests can run without a live repo.
 	Reader CheckpointReader
 	Graph  GraphClient
+	// Egress controls whether prompt text may be sent to an external inference
+	// service. Default-deny on repositories whose checkpoints are redacted.
+	Egress EgressPolicy
 	// SkipGraph forces the text-search evidence path, for comparison runs and
 	// for environments without the plugin.
 	SkipGraph bool
@@ -97,6 +100,13 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	// Stage 1 — requirement extraction.
 	ext, err := SelectExtractor(opts.RequirementsFile)
 	if err != nil {
+		return rep, err
+	}
+	// Privacy boundary: refuse to ship checkpoint prompt text off the machine
+	// from a sensitive repository. Checked BEFORE the call, not after.
+	if err := AuthorizeExtraction(ext, cps, opts.Egress); err != nil {
+		rep.Limitations = append(rep.Limitations,
+			"Requirement extraction was blocked by the prompt-egress guard; no prompt text was transmitted.")
 		return rep, err
 	}
 	reqs, err := ext.Extract(ctx, ask)

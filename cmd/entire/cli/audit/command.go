@@ -24,6 +24,8 @@ func NewCommand() *cobra.Command {
 		ask              string
 		featureID        string
 		noGraph          bool
+		allowEgress      bool
+		sensitive        bool
 		exportDir        string
 		pushDatabricks   bool
 		repoDir          string
@@ -73,6 +75,7 @@ field-by-field construction from an allowlist of derived fields; see privacy.go.
 					RequirementsFile: requirementsFile,
 					Ask:              ask,
 					SkipGraph:        noGraph,
+					Egress:           EgressPolicy{AllowPromptEgress: allowEgress, Sensitive: sensitive},
 				},
 				JSON:           jsonOut,
 				ExportDir:      exportDir,
@@ -90,6 +93,10 @@ field-by-field construction from an allowlist of derived fields; see privacy.go.
 	f.BoolVar(&noGraph, "no-graph", false, "Skip Entire Graph queries and use text search only")
 	f.StringVar(&exportDir, "export", "", "Write the privacy-safe Databricks export (NDJSON + DDL) to this directory")
 	f.BoolVar(&pushDatabricks, "databricks", false, "Also push the export to Databricks (needs DATABRICKS_HOST/TOKEN/WAREHOUSE_ID)")
+	f.BoolVar(&allowEgress, "allow-prompt-egress", false,
+		"Explicitly permit sending checkpoint prompt text to an external inference service on a sensitive repository")
+	f.BoolVar(&sensitive, "sensitive", false,
+		"Treat this repository as sensitive: never send prompt text off the machine (implies --requirements)")
 	f.StringVar(&repoDir, "repo", "", "Repository to audit (default: current directory)")
 	f.StringVar(&failOn, "fail-on", "", "Exit non-zero when the risk verdict is at or above this level: low|medium|high|critical")
 	return cmd
