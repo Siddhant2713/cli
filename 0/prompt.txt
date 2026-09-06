@@ -1,0 +1,9 @@
+Create the file docs/audit-evidence/MILESTONES.md recording the four buildathon milestones for the `entire audit` feature. Do not modify any other file. Write it from the real git history — run `git log --format=%H%n%s%n%b -6` first and base it on what those commits actually say.
+
+The four milestones:
+1. Initial understanding and intended architecture — commit 476802db5, the new cmd/entire/cli/audit package, 5-stage pipeline, decisions made and options rejected.
+2. Last stable state before the Noon Curveball — commit 1fbe30f8a, which fixed a false positive where semantic graph search alone wrongly marked a requirement COMPLETED.
+3. Response to the Curveball (privacy boundary) — commit d4c232f54, where Entire Graph reverse-reachability found an unguarded prompt-egress path to the Anthropic API and egress.go closed it with default-deny.
+4. Final implementation and verification — commit 595efdfdf, 37 tests passing, Databricks verified live with the privacy boundary checked against real rows.
+
+For each milestone state: what was decided, what was rejected and why, what failed, and what open risks remain. Be specific and honest — include that graph evidence does not scale to this repo and that pivot detection has never fired on a live pivot. Then commit the file with git.
