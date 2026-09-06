@@ -203,8 +203,17 @@ Stated plainly, because the whole feature is an argument for honest labelling:
   this in its own output rather than implying the history was clean.
 - **Drift detection's constraint vocabulary is a fixed list.** It catches the shapes it knows and
   will miss novel phrasings.
-- **Cold graph queries are slow** (~48s to build the index on this repository). Warm the cache
-  with `entire graph index` before an interactive run, or use `--no-graph` for a fast lexical pass.
+- **Graph-backed evidence does not yet complete for a full requirement set on a repo this size.**
+  Each requirement issues several `entire graph` subprocess calls, and on this ~1,250-Go-file
+  repository the index does not stay warm across them, so a 12-requirement audit does not finish
+  in a usable time. **Individual graph queries work and are shown in
+  `docs/audit-evidence/graph-evidence.md`** (def, impact, and the final semantic diff, all
+  reproducible); what is not yet proven is the whole requirement set running through them in one
+  pass. `--no-graph` completes in under a second and is the path demonstrated end to end.
+  `cache.go` (a filesystem-backed graph result cache, keyed on HEAD plus a worktree-status digest)
+  exists to close this gap but is **not yet wired into `CLIGraphClient`** — that is the single
+  highest-value next commit, and it is honest to say it is unfinished rather than to imply the
+  graph path is production-ready.
 - **Condensed checkpoints may lag.** The reader falls back to the pending view and records that as
   a completeness downgrade, rather than reporting a vacuous "no checkpoints found".
 
