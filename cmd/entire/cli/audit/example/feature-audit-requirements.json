@@ -1,0 +1,89 @@
+{
+  "_comment": "Requirement graph for `entire audit` itself, decomposed from the feature spec. Used to dogfood the command: `entire audit --requirements cmd/entire/cli/audit/example/feature-audit-requirements.json`.",
+  "requirements": [
+    {
+      "id": "requirement_extraction",
+      "summary": "Decompose the original ask into an atomic requirement graph",
+      "risk_category": "functional",
+      "risk_weight": 3.0,
+      "search_hints": ["SelectExtractor", "parseRequirements", "requirement extraction from the original ask"]
+    },
+    {
+      "id": "checkpoint_sequence_read",
+      "summary": "Read the branch's checkpoint sequence with per-checkpoint completeness",
+      "risk_category": "correctness",
+      "risk_weight": 3.0,
+      "search_hints": ["LoadCheckpoints", "CheckpointReader", "read checkpoint list and explain output"]
+    },
+    {
+      "id": "graph_backed_evidence",
+      "summary": "Search the Entire Graph for structural evidence per requirement",
+      "risk_category": "correctness",
+      "risk_weight": 4.0,
+      "search_hints": ["EvidenceCollector", "GraphClient", "graph def impact neighbors evidence search"]
+    },
+    {
+      "id": "pivot_detection",
+      "summary": "Detect planned-attempted-failed-replaced pivot chains across checkpoints",
+      "risk_category": "correctness",
+      "risk_weight": 4.0,
+      "search_hints": ["DetectPivots", "riskyPivotTerms", "pivot detection attempt failure chain"]
+    },
+    {
+      "id": "decision_drift_detection",
+      "summary": "Flag later choices that contradict earlier stated decisions",
+      "risk_category": "correctness",
+      "risk_weight": 3.5,
+      "search_hints": ["DetectDecisionDrift", "constraintVocab", "decision drift contradiction between checkpoints"]
+    },
+    {
+      "id": "unknown_is_not_completed",
+      "summary": "Never render missing evidence as an authoritative negative claim",
+      "risk_category": "data_integrity",
+      "risk_weight": 5.0,
+      "search_hints": ["StateFromEvidence", "GapFindings", "Authoritative", "could not be verified rather than not implemented"]
+    },
+    {
+      "id": "risk_adjusted_coverage",
+      "summary": "Report risk-weighted coverage with the reasoning shown, not a bare number",
+      "risk_category": "correctness",
+      "risk_weight": 3.5,
+      "search_hints": ["ComputeCoverage", "coverageReasoning", "risk adjusted coverage verdict"]
+    },
+    {
+      "id": "context_completeness_banners",
+      "summary": "Show a context-completeness banner on every finding",
+      "risk_category": "data_integrity",
+      "risk_weight": 4.0,
+      "search_hints": ["Banner", "bannerInsufficient", "complete partial insufficient context banner"]
+    },
+    {
+      "id": "privacy_boundary",
+      "summary": "Never send raw prompts or transcripts outside the local machine",
+      "risk_category": "security",
+      "risk_weight": 5.0,
+      "search_hints": ["BuildExport", "sanitizeSummary", "privacy boundary allowlist export"]
+    },
+    {
+      "id": "no_hosted_inference_fallback",
+      "summary": "Fail with clear guidance when no BYOK key or headless agent is configured",
+      "risk_category": "security",
+      "risk_weight": 4.0,
+      "search_hints": ["ErrNoInference", "no hosted inference fallback error"]
+    },
+    {
+      "id": "databricks_export",
+      "summary": "Publish privacy-safe rows to the feature_requirements and risk_findings tables",
+      "risk_category": "functional",
+      "risk_weight": 3.0,
+      "search_hints": ["PushToDatabricks", "WriteStaticExport", "databricks delta table export"]
+    },
+    {
+      "id": "cited_evidence",
+      "summary": "Every finding cites a command a human can independently re-run",
+      "risk_category": "data_integrity",
+      "risk_weight": 4.0,
+      "search_hints": ["Evidence", "Citation", "verify command citation for each finding"]
+    }
+  ]
+}

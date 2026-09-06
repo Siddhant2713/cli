@@ -130,3 +130,61 @@ func TestDetectDecisionDriftSkipsRedacted(t *testing.T) {
 		t.Errorf("expected no drift claims from a redacted checkpoint, got %+v", got)
 	}
 }
+
+// TestNarrativeExcludesTheUserPrompt covers a real false positive found while
+// running against live checkpoints: the user's instruction said "if Redis turns
+// out not to be usable, implement the best alternative instead", and the
+// detector matched that as a completed attempt→failure→pivot chain. An
+// instruction describing a hypothetical is not a record that it happened.
+func TestNarrativeExcludesTheUserPrompt(t *testing.T) {
+	c := Checkpoint{
+		Message:        "Add a cache",
+		Intent:         "Add a cache",
+		Prompt:         "Use Redis. If Redis turns out not to be usable, it failed, so use an in-memory map instead.",
+		AgentNarrative: "Added the cache.",
+	}
+	if strings.Contains(c.Narrative(), "in-memory") {
+		t.Error("Narrative() included the user prompt; instructions are not evidence of what happened")
+	}
+	if !strings.Contains(c.Narrative(), "Added the cache") {
+		t.Error("Narrative() dropped the agent's own account of its work")
+	}
+	if got := DetectPivots([]Checkpoint{c}); len(got) != 0 {
+		t.Errorf("detected %d pivot(s) from a hypothetical in the user's instruction: %+v", len(got), got)
+	}
+}
+
+// TestPivotSummaryDoesNotOverclaim: a pivot with no guarantee-changing keyword
+// must not be summarised as "changing a stated guarantee". Overclaiming is the
+// exact failure mode this feature argues against, so it must not appear in the
+// feature's own output.
+func TestPivotSummaryDoesNotOverclaim(t *testing.T) {
+	neutral := Checkpoint{
+		ID:             "01NEUTRAL1",
+		AgentNarrative: "Tried the v2 helper API. It failed to compile. Switched to the v1 helper instead.",
+		Completeness:   CompletenessComplete,
+	}
+	got := DetectPivots([]Checkpoint{neutral})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 pivot finding, got %d", len(got))
+	}
+	if strings.Contains(got[0].Summary, "changing a stated guarantee") {
+		t.Errorf("summary overclaims a guarantee change that the risk analysis did not find: %q", got[0].Summary)
+	}
+	if got[0].RiskLevel != RiskLevelLow {
+		t.Errorf("risk level = %q, want low for a pivot with no guarantee keyword", got[0].RiskLevel)
+	}
+
+	risky := Checkpoint{
+		ID:             "01RISKY001",
+		AgentNarrative: "Tried Redis for the shared counter. The connection failed. Fell back to an in-memory map instead.",
+		Completeness:   CompletenessComplete,
+	}
+	got = DetectPivots([]Checkpoint{risky})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 pivot finding, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Summary, "changing a stated guarantee") {
+		t.Errorf("a genuine guarantee-changing pivot should say so: %q", got[0].Summary)
+	}
+}

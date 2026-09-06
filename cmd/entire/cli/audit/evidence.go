@@ -24,6 +24,10 @@ type EvidenceCollector struct {
 	Graph GraphClient
 	// Dir is the repository root, used for the text-search fallback.
 	Dir string
+	// RequirementsFile, when the requirement graph came from a file, is excluded
+	// from text evidence: it is where the search hints were defined, so a match
+	// in it proves nothing.
+	RequirementsFile string
 	// graphOK caches whether the graph plugin answered at all.
 	graphOK    bool
 	graphKnown bool
@@ -60,8 +64,14 @@ func (c *EvidenceCollector) Collect(ctx context.Context, req Requirement) ([]Evi
 	)
 
 	if !c.GraphAvailable(ctx) {
-		limitations = append(limitations,
-			"Entire Graph plugin unavailable; evidence for all requirements fell back to text search")
+		// Only report a *plugin* problem when a graph was actually wanted.
+		// With --no-graph the caller already recorded the reason, and repeating
+		// "plugin unavailable" per requirement would misattribute a deliberate
+		// choice to a broken environment.
+		if c.Graph != nil {
+			limitations = append(limitations,
+				"Entire Graph plugin unavailable; evidence for all requirements fell back to text search")
+		}
 		searchQuality = CompletenessPartial
 		found = append(found, c.textSearch(ctx, req)...)
 		return found, searchQuality, limitations
@@ -146,6 +156,21 @@ func (c *EvidenceCollector) Collect(ctx context.Context, req Requirement) ([]Evi
 	return found, searchQuality, limitations
 }
 
+// circularEvidencePaths are excluded from text search because a hit in them is
+// not evidence of anything.
+//
+// The requirements file literally contains the search hints — it is where they
+// were defined — so grepping for a hint and finding it there is circular: the
+// audit would cite its own input as proof that the input was implemented. This
+// was a real false positive observed on the first end-to-end run, where every
+// requirement came back PARTIAL on the strength of matching its own definition.
+func circularEvidencePath(path, requirementsFile string) bool {
+	if requirementsFile != "" && strings.HasSuffix(requirementsFile, path) {
+		return true
+	}
+	return strings.Contains(path, "/testdata/") || strings.HasPrefix(path, "testdata/")
+}
+
 // textSearch is the last-resort fallback, recorded with its own evidence kind so
 // nobody mistakes a lexical hit for a structural fact.
 func (c *EvidenceCollector) textSearch(ctx context.Context, req Requirement) []Evidence {
@@ -162,8 +187,21 @@ func (c *EvidenceCollector) textSearch(ctx context.Context, req Requirement) []E
 			// git grep exits 1 on no match; that is a real answer, not an error.
 			continue
 		}
-		lines := strings.Split(strings.TrimSpace(string(res)), "\n")
-		if len(lines) == 0 || lines[0] == "" {
+		var lines []string
+		for _, l := range strings.Split(strings.TrimSpace(string(res)), "\n") {
+			if l == "" {
+				continue
+			}
+			path := l
+			if i := strings.Index(l, ":"); i > 0 {
+				path = l[:i]
+			}
+			if circularEvidencePath(path, c.RequirementsFile) {
+				continue
+			}
+			lines = append(lines, l)
+		}
+		if len(lines) == 0 {
 			continue
 		}
 		citation := lines[0]

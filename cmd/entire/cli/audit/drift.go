@@ -141,11 +141,24 @@ func DetectPivots(cps []Checkpoint) []Finding {
 
 		category, level, guarantee := RiskFunctional, RiskLevelLow,
 			"No guarantee-changing keyword was matched in the replacement; this pivot is recorded for review but not scored as risky."
+		guaranteeChanged := false
 		for _, t := range riskyPivotTerms {
 			if t.pattern.MatchString(pivot) {
 				category, level, guarantee = t.category, t.level, t.guarantee
+				guaranteeChanged = true
 				break
 			}
+		}
+
+		// The summary must not claim more than the risk analysis found. Saying
+		// "changing a stated guarantee" on a pivot where no guarantee term
+		// matched is an overclaim, and overclaiming is the failure mode this
+		// whole feature argues against.
+		summary := fmt.Sprintf("Pivot recorded in checkpoint %s: an approach was abandoned and replaced, "+
+			"changing a stated guarantee", shortID(cp.ID))
+		if !guaranteeChanged {
+			summary = fmt.Sprintf("Pivot recorded in checkpoint %s: an approach was abandoned and replaced; "+
+				"no guarantee-changing keyword matched, so this is flagged for review only", shortID(cp.ID))
 		}
 
 		f := Finding{
@@ -158,12 +171,11 @@ func DetectPivots(cps []Checkpoint) []Finding {
 			RiskInference:         guarantee,
 			RiskCategory:          category,
 			RiskLevel:             level,
-			Summary: fmt.Sprintf("Pivot recorded in checkpoint %s: an approach was abandoned and replaced, changing a stated guarantee",
-				shortID(cp.ID)),
-			Recommendation: "Confirm the replacement still satisfies the original requirement, or amend the requirement to match reality.",
-			Checkpoints:    windowIDs,
-			Completeness:   windowCompleteness,
-			Authoritative:  windowCompleteness.Authoritative(),
+			Summary:               summary,
+			Recommendation:        "Confirm the replacement still satisfies the original requirement, or amend the requirement to match reality.",
+			Checkpoints:           windowIDs,
+			Completeness:          windowCompleteness,
+			Authoritative:         windowCompleteness.Authoritative(),
 		}
 		findings = append(findings, f)
 	}

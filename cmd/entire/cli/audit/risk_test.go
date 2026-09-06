@@ -290,3 +290,25 @@ func TestWriteStaticExportProducesLoadableArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// TestCircularEvidenceIsExcluded covers a real false positive found on the first
+// end-to-end run: every requirement came back PARTIAL because git grep matched
+// the search hints inside the requirements file that defined them. Citing your
+// own input as proof the input was implemented is circular, not evidence.
+func TestCircularEvidenceIsExcluded(t *testing.T) {
+	cases := []struct {
+		path, reqFile string
+		want          bool
+	}{
+		{"cmd/entire/cli/audit/testdata/requirements_auth.json", "cmd/entire/cli/audit/testdata/requirements_auth.json", true},
+		{"testdata/reqs.json", "", true},
+		{"pkg/foo/testdata/golden.json", "", true},
+		{"cmd/entire/cli/audit/evidence.go", "reqs.json", false},
+		{"internal/auth/ratelimit.go", "", false},
+	}
+	for _, tc := range cases {
+		if got := circularEvidencePath(tc.path, tc.reqFile); got != tc.want {
+			t.Errorf("circularEvidencePath(%q, %q) = %v, want %v", tc.path, tc.reqFile, got, tc.want)
+		}
+	}
+}

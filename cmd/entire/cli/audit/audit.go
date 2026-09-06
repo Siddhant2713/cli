@@ -110,7 +110,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	}
 
 	// Stage 3 — evidence.
-	collector := &EvidenceCollector{Dir: opts.Dir}
+	collector := &EvidenceCollector{Dir: opts.Dir, RequirementsFile: opts.RequirementsFile}
 	if !opts.SkipGraph {
 		if opts.Graph != nil {
 			collector.Graph = opts.Graph
