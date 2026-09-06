@@ -17,6 +17,7 @@ You're in the right place if any of this sounds like you:
 If you get stuck at any point, ask in [Discord](https://discord.gg/jZJs3Tue4S). First-time contributor questions are welcome.
 
 ---
+
 ## Find a first issue
 
 A few good places to look:
